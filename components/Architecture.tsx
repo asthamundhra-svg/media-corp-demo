@@ -1,97 +1,194 @@
+// Two-layer architecture: what's actually running today, and what each
+// piece maps to on Google Cloud for a fuller production build. Built with
+// styled divs (no new dependencies) so it renders inline, in-theme, no
+// export needed - meant to be read live with a Google engineer in the room.
+
+const GCP_MAPPING: { component: string; today: string; gcp: string; why: string }[] = [
+  {
+    component: "Agent reasoning & tool-calling",
+    today: "In-process tool loop in app/api/agent/chat/route.ts (Claude or Groq)",
+    gcp: "Gemini Enterprise Agent Platform (formerly Vertex AI) with Agent Designer",
+    why: "Managed multi-step tool orchestration, evaluation, and guardrails instead of a hand-rolled loop.",
+  },
+  {
+    component: "Omnichannel ingestion (WhatsApp, Instagram, Facebook Messenger, X)",
+    today: "Simulated in seed data + send_channel_reply tool",
+    gcp: "Conversational Agents / Customer Experience Agent Studio (Gemini-powered)",
+    why: "Native, pre-built connectors per social channel instead of custom webhook plumbing per platform.",
+  },
+  {
+    component: "Phone / IVR + live-agent support",
+    today: "Phone modeled as a contact channel only",
+    gcp: "Contact Center AI Platform (CCAI) with Agent Assist",
+    why: "Real-time transcription, IVR deflection, and live suggested-reply assistance for phone support.",
+  },
+  {
+    component: "CRM data store",
+    today: "In-memory store (lib/memoryStore.ts), Postgres-ready via lib/pgStore.ts",
+    gcp: "AlloyDB (transactional) + BigQuery (analytics / reporting)",
+    why: "Durable Postgres-compatible OLTP for live records, plus a warehouse for cross-domain reporting.",
+  },
+  {
+    component: "Event backbone",
+    today: "Direct in-process function calls between routes and the store",
+    gcp: "Pub/Sub",
+    why: "Decouples omnichannel ticket and engagement events from whatever processes them downstream.",
+  },
+  {
+    component: "Contract & rights document parsing",
+    today: "Manual entry into the properties bag (territory, genre, exclusivity terms)",
+    gcp: "Document AI",
+    why: "Structured extraction from PDF/scanned content-licensing and talent contracts.",
+  },
+  {
+    component: "DOOH / sponsorship creative previews",
+    today: "Text-only properties (screen count, tier, revenue share)",
+    gcp: "Vertex AI Imagen / Lyria",
+    why: "Generate creative previews for out-of-home screens and sponsorship audio spots before production.",
+  },
+  {
+    component: "Hosting",
+    today: "Vercel (Next.js 14 App Router, auto-deploy from GitHub)",
+    gcp: "Cloud Run",
+    why: "Same containerized Next.js app, serverless and autoscaling, no rewrite required.",
+  },
+  {
+    component: "Executive dashboards",
+    today: "pipeline_summary tool + in-app stat cards",
+    gcp: "Looker",
+    why: "A governed semantic layer over BigQuery so finance/exec views stay consistent across teams.",
+  },
+];
+
 export default function Architecture() {
   return (
-    <div className="mx-auto max-w-3xl space-y-6 overflow-y-auto py-2 text-[13.5px] leading-relaxed text-white/80">
+    <div className="mx-auto max-w-4xl space-y-8 overflow-y-auto py-2 text-[13.5px] leading-relaxed text-white/80">
       <section>
-        <h2 className="text-[16px] font-semibold text-white">Why this data model</h2>
+        <h2 className="text-[16px] font-semibold text-white">Why this is built this way</h2>
         <p className="mt-2">
-          A generic advertiser-sales CRM undersells what a broadcaster like Mediacorp actually runs. Mediacorp
-          is Singapore&apos;s national media network - TV (Channel 5, 8, U, Suria, Vasantham, CNA), radio
-          (Class 95FM, Gold 905FM, Capital 958FM, YES 933FM, Love 972FM, CNA938), digital (meWATCH, meLISTEN)
-          and a DOOH out-of-home network - reaching about 99% of the population weekly across four languages.
-          Managing that reach means managing six distinct relationship types, each with its own vocabulary,
-          and a support desk that receives real, high-volume traffic across very different channels. This
-          demo models all of it, not just the ad-sales slice.
+          Mediacorp runs five genuinely different relationship businesses - Ad Sales, Content Licensing, Talent &amp;
+          Production, Sponsorship &amp; Events, and DOOH Partnerships - plus a Support Desk that spans 7 real contact
+          channels. This demo models each domain with its own real-world lifecycle (not one generic sales funnel) and
+          gives every relationship type and every support ticket to an agent that can actually read and write the
+          live CRM, not just answer questions about it. What follows is an honest map of what's running today versus
+          what a fuller Google Cloud build would look like.
         </p>
       </section>
 
       <section>
-        <h2 className="text-[16px] font-semibold text-white">Six relationship domains, one data model</h2>
-        <div className="mt-3 grid gap-3">
-          <LayerCard
-            title="1. Ad Sales & Agencies"
-            body="Advertisers (Unilever, DBS, Singtel, Shopee...) and their media agencies of record (GroupM, Dentsu, IPG Mediabrands, Zenith, Wavemaker, OMD). Stage vocabulary mirrors real broadcast ad-ops tools like WideOrbit, Boostr, and Mediaocean: avails sent, negotiation, booked, live - not a generic 'deal' pipeline."
-          />
-          <LayerCard
-            title="2. Content Licensing & Syndication"
-            body="Content Mediacorp licenses IN for meWATCH from international distributors (Korean dramas via CJ ENM, Turkish dramas via Global Agency, factual formats via Beyond Distribution), and Mediacorp originals syndicated OUT to regional broadcasters (Astro Malaysia, GMA Network, Viu Asia) - a real, distinct revenue and rights-management workflow."
-          />
-          <LayerCard
-            title="3. Talent & Production Partners"
-            body="Actors, radio DJs, hosts and presenters booked through talent/artiste management agencies, plus independent production houses that co-produce factual and drama content - fee negotiation, contracts, and production credits."
-          />
-          <LayerCard
-            title="4. Sponsorship & Events"
-            body="Star Awards, the National Day Parade Telecast, festivals and roadshows are sold and sponsored differently from a straight ad spot - title/presenting sponsor tiers, not campaign flights."
-          />
-          <LayerCard
-            title="5. DOOH Location Partners"
-            body="Mall operators (CapitaLand, Frasers Property), transit media operators (SMRT Media, ComfortDelGro) - inventory, screen counts, and revenue-share terms, echoing how real DOOH platforms like Broadsign and Vistar Media structure location partnerships."
-          />
-          <LayerCard
-            title="6. Support Desk"
-            body="Real Mediacorp support channels: meWATCH streaming issues (playback, billing, login - the kind of volume a Conviva-style QoE/support stack would surface), Broadcast TV/radio (signal, subtitles, IMDA content complaints, song ID, contests), Advertiser (make-goods, invoice disputes), and Corporate (press, licensing requests, DMCA) - styled after Zendesk/Freshdesk-class ticketing, referencing real intake points like tellmediacorp@mediacorp.com.sg, tellmediacorpdigital@mediacorp.com.sg, and mewatch.sg/help."
-          />
+        <h2 className="text-[16px] font-semibold text-white">Layer 1 — Today: working demo</h2>
+        <p className="mt-1.5 text-white/50">Everything below is live and clickable in this app right now.</p>
+        <div className="mt-4 rounded-xl border border-mc-border bg-mc-panel p-5">
+          <div className="flex flex-wrap items-stretch justify-center gap-2">
+            <FlowNode title="Browser" subtitle="Agent Chat UI + Pipeline / Support / Organizations tabs" />
+            <Arrow />
+            <FlowNode title="Next.js 14 App Router" subtitle="Deployed on Vercel, auto-deploy from GitHub" />
+            <Arrow />
+            <FlowNode title="MCP JSON-RPC tool layer" subtitle="lib/mcpTools.ts — shared by /api/mcp and /api/agent/chat" accent />
+          </div>
+          <div className="my-2 flex justify-center">
+            <DownArrow />
+          </div>
+          <div className="flex flex-wrap items-stretch justify-center gap-2">
+            <FlowNode
+              title="In-memory CRM store"
+              subtitle="Organizations · Engagements · Tickets · Tasks · Notes · Activity"
+            />
+            <DoubleArrow />
+            <FlowNode title="Agent tool-calling loop" subtitle="8-turn tool loop, full trace shown in the UI" accent />
+            <Arrow />
+            <FlowNode title="Groq / Anthropic LLM" subtitle="Llama 3.3 70B or Claude Sonnet, provider auto-selected" />
+          </div>
         </div>
       </section>
 
       <section>
-        <h2 className="text-[16px] font-semibold text-white">The three technical layers</h2>
-        <div className="mt-3 grid gap-3">
-          <LayerCard
-            title="1. Open-source-style CRM backend"
-            body="Organizations, contacts, engagements (unified across all 5 relationship types via a type discriminator + a small properties bag), tickets, tasks, and notes - exposed as a clean REST API on Postgres. No per-seat licensing, full data ownership, easy to self-host or extend."
-          />
-          <LayerCard
-            title="2. MCP tool layer"
-            body="Every action - search organizations, list/create/update engagements of any type, move a stage, get a pipeline summary, list/create/assign/reply-to tickets, create tasks, log notes - is exposed as an MCP tool over a JSON-RPC endpoint (/api/mcp). Any MCP-compatible client (Claude Desktop, Claude Code, another internal agent) can connect to this CRM directly."
-          />
-          <LayerCard
-            title="3. Agentic frontend"
-            body="A chat interface calls an LLM with those same tools. The team asks in plain English - 'assign the Singtel make-good ticket to Ad Ops and draft a reply', 'what DOOH partnerships are up for renewal' - and watches the agent call real tools against real data, live, with every tool call visible for trust and auditability."
-          />
+        <h2 className="text-[16px] font-semibold text-white">Layer 2 — Target: Google Cloud-ready</h2>
+        <p className="mt-1.5 text-white/50">
+          Every component above maps cleanly onto an existing Google Cloud product - this is a stepping stone, not a
+          rewrite.
+        </p>
+        <div className="mt-4 overflow-hidden rounded-xl border border-mc-border">
+          <table className="w-full text-left text-[12.5px]">
+            <thead className="bg-mc-panel text-white/40">
+              <tr>
+                <th className="px-3 py-2 font-medium">Today</th>
+                <th className="px-3 py-2 font-medium">Maps to on Google Cloud</th>
+                <th className="px-3 py-2 font-medium">Why</th>
+              </tr>
+            </thead>
+            <tbody>
+              {GCP_MAPPING.map((row) => (
+                <tr key={row.component} className="border-t border-mc-border/60 align-top">
+                  <td className="px-3 py-3">
+                    <div className="font-medium text-white">{row.component}</div>
+                    <div className="mt-0.5 text-[11.5px] text-white/40">{row.today}</div>
+                  </td>
+                  <td className="px-3 py-3">
+                    <span className="rounded bg-mc-green/10 px-2 py-1 text-[12px] font-medium text-mc-green">
+                      {row.gcp}
+                    </span>
+                  </td>
+                  <td className="px-3 py-3 text-white/55">{row.why}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </section>
 
       <section>
-        <h2 className="text-[16px] font-semibold text-white">What this demo proves</h2>
+        <h2 className="text-[16px] font-semibold text-white">What this demo proves today</h2>
         <ul className="mt-2 list-disc space-y-1.5 pl-5">
-          <li>Full read/write control across all six relationship domains through natural language, not just Q&amp;A on ad sales.</li>
-          <li>A real, connectable MCP server - not a mocked chatbot bolted onto a CRM UI.</li>
-          <li>A data model grounded in how Mediacorp and the wider media & entertainment industry actually operate - avails and makegoods, not generic deals; licensing direction and territory, not generic content rows; DOOH revenue share, not a flat ad line item.</li>
-          <li>A support desk that reflects Mediacorp&apos;s real intake channels and volume patterns, with the agent able to triage, assign, and reply - not just view.</li>
+          <li>Five real relationship domains, each with its own lifecycle and Kanban board - not a reskinned generic funnel.</li>
+          <li>Working, enforced role-based access - domain scoping, ownership scoping, and channel scoping, gated live in the UI and honored by the agent's own responses.</li>
+          <li>A real omnichannel support model - 7 contact channels, live message threads, and channel-aware replies with simulated delivery confirmations.</li>
+          <li>A real, connectable MCP server (POST /api/mcp) - any MCP-compatible client can call these same tools directly.</li>
         </ul>
       </section>
 
       <section>
         <h2 className="text-[16px] font-semibold text-white">Path to production</h2>
         <p className="mt-2">
-          For a production rollout we&apos;d stand up a self-hosted open-source CRM (Twenty, EspoCRM, or
-          Frappe CRM depending on team preference) behind this same API surface, connect it to Mediacorp&apos;s
-          MeID Audience Analytics Hub for targeting-aware recommendations, integrate a real support/ticketing
-          backend (Zendesk, Freshdesk, or Salesforce Service Cloud) and a streaming QoE provider (Conviva-style)
-          for meWATCH signal quality, add SSO and role-based access per relationship domain, and extend the MCP
-          tool set to cover rate-card lookups, rights/territory conflict checks, and DOOH inventory availability.
+          This build is intentionally honest about where it sits: a fully working agentic CRM on an in-memory (or
+          optionally Postgres) store, ready to be lifted onto the Google Cloud stack above with no architectural
+          rewrite - the tool-calling contract, the domain data model, and the RBAC layer all carry over unchanged.
         </p>
       </section>
     </div>
   );
 }
 
-function LayerCard({ title, body }: { title: string; body: string }) {
+function FlowNode({ title, subtitle, accent }: { title: string; subtitle: string; accent?: boolean }) {
   return (
-    <div className="rounded-xl border border-mc-border bg-mc-panel p-4">
-      <div className="text-[13.5px] font-medium text-white">{title}</div>
-      <div className="mt-1.5 text-white/60">{body}</div>
+    <div
+      className={
+        "flex w-48 flex-col justify-center rounded-lg border px-3 py-3 text-center " +
+        (accent ? "border-mc-blue/50 bg-mc-blue/10" : "border-mc-border bg-mc-panel2")
+      }
+    >
+      <div className={"text-[12.5px] font-semibold " + (accent ? "text-mc-blueBright" : "text-white")}>{title}</div>
+      <div className="mt-1 text-[10.5px] leading-snug text-white/45">{subtitle}</div>
+    </div>
+  );
+}
+
+function Arrow() {
+  return (
+    <div className="flex items-center px-1 text-mc-green">
+      <span className="text-[18px]">→</span>
+    </div>
+  );
+}
+
+function DownArrow() {
+  return <span className="text-[18px] text-mc-green">↓</span>;
+}
+
+function DoubleArrow() {
+  return (
+    <div className="flex items-center px-1 text-mc-cyan">
+      <span className="text-[18px]">⇄</span>
     </div>
   );
 }

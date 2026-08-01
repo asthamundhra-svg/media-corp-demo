@@ -4,9 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import { Contact, Engagement, Note, OrgCategory, Organization, Ticket } from "@/lib/types";
 import { fmtDate, fmtSgd, ORG_CATEGORY_LABELS, TICKET_STATUS_COLORS } from "@/lib/format";
 import { ENGAGEMENT_TYPE_LABELS, PHASE_COLORS } from "@/lib/engagementMeta";
+import { useRole } from "@/components/RoleSwitcher";
+import { canViewEngagement, canViewOrgCategory, canViewTicket } from "@/lib/rbac";
 
-const CATEGORY_FILTERS: (OrgCategory | "All")[] = [
-  "All",
+const ALL_CATEGORIES: OrgCategory[] = [
   "Advertiser",
   "Agency",
   "Distributor",
@@ -17,6 +18,7 @@ const CATEGORY_FILTERS: (OrgCategory | "All")[] = [
 ];
 
 export default function Organizations({ refreshKey }: { refreshKey: number }) {
+  const { permissions } = useRole();
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [category, setCategory] = useState<OrgCategory | "All">("All");
   const [q, setQ] = useState("");
@@ -35,21 +37,38 @@ export default function Organizations({ refreshKey }: { refreshKey: number }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
+  // Only categories this role's domain access permits show up at all - real
+  // filtering, not just hidden buttons (e.g. a Content Licensing Manager
+  // never sees Advertiser/Agency/TalentAgency/Sponsor/LocationPartner rows).
+  const permittedCategories = useMemo(
+    () => ALL_CATEGORIES.filter((c) => canViewOrgCategory(permissions, c)),
+    [permissions]
+  );
+  const categoryFilters: (OrgCategory | "All")[] = ["All", ...permittedCategories];
+
   const visible = useMemo(() => {
-    let rows = organizations;
+    let rows = organizations.filter((o) => canViewOrgCategory(permissions, o.category));
     if (category !== "All") rows = rows.filter((o) => o.category === category);
     if (q.trim()) {
       const needle = q.toLowerCase();
       rows = rows.filter((o) => o.name.toLowerCase().includes(needle) || o.industry.toLowerCase().includes(needle));
     }
     return rows;
-  }, [organizations, category, q]);
+  }, [organizations, category, q, permissions]);
+
+  const hiddenCategoryCount = ALL_CATEGORIES.length - permittedCategories.length;
 
   return (
     <div className="flex h-full flex-col gap-4">
+      {hiddenCategoryCount > 0 && (
+        <div className="rounded-lg border border-mc-border bg-mc-panel px-3 py-2 text-[11px] text-white/40">
+          {permissions.label} sees only organization categories relevant to their domain access. {hiddenCategoryCount}{" "}
+          categor{hiddenCategoryCount === 1 ? "y is" : "ies are"} hidden for this role.
+        </div>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap gap-1.5">
-          {CATEGORY_FILTERS.map((c) => (
+          {categoryFilters.map((c) => (
             <button
               key={c}
               onClick={() => setCategory(c)}
@@ -128,6 +147,7 @@ export default function Organizations({ refreshKey }: { refreshKey: number }) {
 }
 
 function OrgDetail({ orgId, onClose, refreshKey }: { orgId: string; onClose: () => void; refreshKey: number }) {
+  const { permissions } = useRole();
   const [data, setData] = useState<{
     organization: Organization;
     contacts: Contact[];
@@ -143,7 +163,12 @@ function OrgDetail({ orgId, onClose, refreshKey }: { orgId: string; onClose: () 
   }, [orgId, refreshKey]);
 
   if (!data) return <div className="text-white/40">Loading…</div>;
-  const { organization, contacts, engagements, tickets, notes } = data;
+  const { organization, contacts, notes } = data;
+  // Real RBAC filtering, not just a cosmetic label - an Ad Sales Rep only
+  // sees their own engagements even inside an org's detail panel, and a
+  // role with no Support Desk access sees no tickets here either.
+  const engagements = data.engagements.filter((e) => canViewEngagement(permissions, e));
+  const tickets = data.tickets.filter((t) => canViewTicket(permissions, t));
 
   return (
     <div className="space-y-4">

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { getToolByName, toolsAsAnthropicFormat, toolsAsOpenAIFormat } from "@/lib/mcpTools";
+import { getPermissions, Role, roleSystemPromptBlock } from "@/lib/rbac";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -24,17 +25,22 @@ real relationship domains:
 5. DOOH Location Partners - malls, transit operators and property owners (CapitaLand, SMRT Media,
    Frasers Property, ComfortDelGro) hosting Mediacorp's out-of-home screens - inventory, revenue share,
    contract terms.
-6. Support Desk - tickets across 4 real Mediacorp channels: meWATCH (streaming app issues), Broadcast
+6. Support Desk - tickets across 4 real Mediacorp business queues: meWATCH (streaming app issues), Broadcast
    (TV + Radio - signal, subtitles, IMDA content complaints, song ID, contests), Advertiser (make-goods,
-   invoice disputes, creative rejections), and Corporate (press inquiries, licensing requests, DMCA).
+   invoice disputes, creative rejections), and Corporate (press inquiries, licensing requests, DMCA) - and
+   separately, each ticket also has its own contact channel (how it physically arrived): WhatsApp Business,
+   Instagram DM, Facebook Messenger, X (Twitter), Phone, Email, or Web Help Centre. Use send_channel_reply
+   to actually reply back to a requester on their own contact channel (it appends to the ticket's live
+   message thread and returns a delivery confirmation naming the channel); use reply_to_ticket for a purely
+   internal logged note instead.
 
 You have full read AND write access to all of this via tools: search/get organizations, list/create/update
 engagements across all 5 types, move engagement stages, get pipeline summaries, list/create tickets, assign
-tickets, change ticket status, and draft/log ticket replies, plus tasks and notes. Always call tools to look
-up or change real data rather than guessing - when a user asks you to do something (create an engagement,
-move a stage, assign or reply to a ticket, log a note, create a task), actually call the tool, don't just
-describe what you would do. Keep responses concise and concrete, referencing real organization/engagement/
-ticket names. Prices are in Singapore dollars (SGD).`;
+tickets, change ticket status, draft/log ticket replies, send a channel-aware reply, plus tasks and notes.
+Always call tools to look up or change real data rather than guessing - when a user asks you to do something
+(create an engagement, move a stage, assign or reply to a ticket, log a note, create a task), actually call
+the tool, don't just describe what you would do. Keep responses concise and concrete, referencing real
+organization/engagement/ticket names. Prices are in Singapore dollars (SGD).`;
 
 export async function POST(req: NextRequest) {
   const groqKey = process.env.GROQ_API_KEY;
@@ -50,14 +56,16 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { messages } = await req.json();
+  const { messages, role } = await req.json();
+  const permissions = getPermissions((role as Role) || "Executive");
+  const fullSystemPrompt = `${SYSTEM_PROMPT}\n\n${roleSystemPromptBlock(permissions)}`;
 
   try {
     if (groqKey) {
-      const result = await runGroqAgentLoop(groqKey, messages);
+      const result = await runGroqAgentLoop(groqKey, messages, fullSystemPrompt);
       return NextResponse.json(result);
     } else {
-      const result = await runAnthropicAgentLoop(anthropicKey!, messages);
+      const result = await runAnthropicAgentLoop(anthropicKey!, messages, fullSystemPrompt);
       return NextResponse.json(result);
     }
   } catch (err: any) {
@@ -66,7 +74,7 @@ export async function POST(req: NextRequest) {
 }
 
 // ---------- Anthropic (Claude) tool-use loop ----------
-async function runAnthropicAgentLoop(apiKey: string, messages: any[]) {
+async function runAnthropicAgentLoop(apiKey: string, messages: any[], systemPrompt: string) {
   const anthropic = new Anthropic({ apiKey });
   const conversation: Anthropic.MessageParam[] = messages.map((m: any) => ({
     role: m.role,
@@ -79,7 +87,7 @@ async function runAnthropicAgentLoop(apiKey: string, messages: any[]) {
     const response = await anthropic.messages.create({
       model,
       max_tokens: 1500,
-      system: SYSTEM_PROMPT,
+      system: systemPrompt,
       tools: toolsAsAnthropicFormat() as any,
       messages: conversation,
     });
@@ -121,12 +129,12 @@ async function runAnthropicAgentLoop(apiKey: string, messages: any[]) {
 }
 
 // ---------- Groq (OpenAI-compatible function calling) loop ----------
-async function runGroqAgentLoop(apiKey: string, messages: any[]) {
+async function runGroqAgentLoop(apiKey: string, messages: any[], systemPrompt: string) {
   const model = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
   const trace: any[] = [];
 
   const conversation: any[] = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: systemPrompt },
     ...messages.map((m: any) => ({
       role: m.role,
       content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),

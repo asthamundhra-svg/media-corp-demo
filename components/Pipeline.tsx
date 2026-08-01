@@ -3,18 +3,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { Engagement, EngagementType, Organization, Task } from "@/lib/types";
 import { fmtSgd, fmtDate } from "@/lib/format";
-import {
-  ENGAGEMENT_TYPE_LABELS,
-  MEDIACORP_PROPERTIES,
-  PHASES,
-  PHASE_COLORS,
-  STAGES_BY_TYPE,
-} from "@/lib/engagementMeta";
+import { ENGAGEMENT_TYPE_LABELS, ENGAGEMENT_DOMAIN_BLURB, MEDIACORP_PROPERTIES, STAGES_BY_TYPE } from "@/lib/engagementMeta";
+import { useRole } from "@/components/RoleSwitcher";
+import { canCreateInDomain, canEditEngagement, canViewEngagement, RolePermissions } from "@/lib/rbac";
 
 type SubTab = "board" | "tasks";
 
-const TYPE_FILTERS: (EngagementType | "All")[] = [
-  "All",
+// Each of these is its OWN domain with its OWN lifecycle - not one shared
+// generic pipeline. See lib/engagementMeta.ts STAGES_BY_TYPE.
+const DOMAINS: EngagementType[] = [
   "AdCampaign",
   "ContentLicensing",
   "TalentBooking",
@@ -50,8 +47,9 @@ const PROPERTY_FIELDS: Record<EngagementType, { key: string; label: string; type
 };
 
 export default function Pipeline({ refreshKey }: { refreshKey: number }) {
+  const { permissions } = useRole();
   const [sub, setSub] = useState<SubTab>("board");
-  const [typeFilter, setTypeFilter] = useState<EngagementType | "All">("All");
+  const [domain, setDomain] = useState<EngagementType>("AdCampaign");
   const [engagements, setEngagements] = useState<Engagement[]>([]);
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -99,6 +97,19 @@ export default function Pipeline({ refreshKey }: { refreshKey: number }) {
     if (data.engagement) setEngagements((cur) => cur.map((e) => (e.id === id ? data.engagement : e)));
   }
 
+  async function approvePricing(e: Engagement) {
+    await fetch("/api/crm/notes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        body: `Pricing/discount approved for "${e.name}" by ${permissions.label}.`,
+        engagementId: e.id,
+        orgId: e.orgId,
+        author: permissions.label,
+      }),
+    });
+  }
+
   async function toggleTask(taskId: string, done: boolean) {
     setTasks((cur) => cur.map((t) => (t.id === taskId ? { ...t, done } : t)));
     await fetch(`/api/crm/tasks/${taskId}`, {
@@ -108,74 +119,130 @@ export default function Pipeline({ refreshKey }: { refreshKey: number }) {
     });
   }
 
-  const visible = typeFilter === "All" ? engagements : engagements.filter((e) => e.type === typeFilter);
+  const access = permissions.domainAccess[domain];
+  const domainEngagements = engagements.filter((e) => e.type === domain);
+  const visible = access === "none" ? [] : domainEngagements.filter((e) => canViewEngagement(permissions, e));
+  const hiddenCount = domainEngagements.length - visible.length;
+  const canCreate = canCreateInDomain(permissions, domain);
+
   const totalActive = visible.filter((e) => e.phase !== "Cancelled").reduce((s, e) => s + e.valueSgd, 0);
   const liveOrConfirmed = visible.filter((e) => e.phase === "Live" || e.phase === "Confirmed").length;
 
+  const visibleTasks = tasks.filter((t) => {
+    if (!t.engagementId) return true;
+    const eng = engById[t.engagementId];
+    if (!eng) return true;
+    return canViewEngagement(permissions, eng);
+  });
+
   return (
     <div className="flex h-full flex-col gap-4">
-      <div className="grid grid-cols-3 gap-3">
-        <StatCard label="Active relationship value" value={fmtSgd(totalActive)} />
-        <StatCard label="Confirmed or live" value={String(liveOrConfirmed)} />
-        <StatCard label="Total engagements" value={String(visible.length)} />
-      </div>
-
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex gap-1 rounded-lg border border-mc-border bg-mc-panel p-1">
-          {(["board", "tasks"] as SubTab[]).map((s) => (
+      <div className="flex flex-wrap gap-1.5">
+        {DOMAINS.map((d) => {
+          const dAccess = permissions.domainAccess[d];
+          const activeTab = domain === d;
+          return (
             <button
-              key={s}
-              onClick={() => setSub(s)}
-              className={
-                "rounded-md px-3 py-1.5 text-[12.5px] capitalize " +
-                (sub === s ? "bg-mc-blue text-white" : "text-white/60 hover:text-white")
-              }
-            >
-              {s}
-            </button>
-          ))}
-        </div>
-        {sub === "board" && (
-          <button
-            onClick={() => setShowNew(true)}
-            className="rounded-lg bg-mc-blue px-3 py-1.5 text-[12.5px] font-medium text-white hover:bg-mc-blueBright"
-          >
-            + New Engagement
-          </button>
-        )}
-      </div>
-
-      {sub === "board" && (
-        <div className="flex flex-wrap gap-1.5">
-          {TYPE_FILTERS.map((t) => (
-            <button
-              key={t}
-              onClick={() => setTypeFilter(t)}
+              key={d}
+              onClick={() => setDomain(d)}
               className={
                 "rounded-full border px-3 py-1 text-[11.5px] " +
-                (typeFilter === t
+                (activeTab
                   ? "border-mc-blue bg-mc-blue/15 text-mc-blueBright"
+                  : dAccess === "none"
+                  ? "border-mc-border text-white/25 hover:text-white/50"
                   : "border-mc-border text-white/50 hover:text-white/80")
               }
             >
-              {t === "All" ? "All" : ENGAGEMENT_TYPE_LABELS[t as EngagementType]}
+              {ENGAGEMENT_TYPE_LABELS[d]}
+              {dAccess === "none" && <span className="ml-1.5 text-[9px] uppercase tracking-wide">restricted</span>}
+              {dAccess === "read" && <span className="ml-1.5 text-[9px] uppercase tracking-wide text-white/30">read-only</span>}
+              {dAccess === "own" && <span className="ml-1.5 text-[9px] uppercase tracking-wide text-white/30">my accounts</span>}
             </button>
-          ))}
-        </div>
-      )}
-
-      <div className="flex-1 overflow-auto">
-        {loading ? (
-          <div className="p-8 text-center text-white/40">Loading relationship hub data…</div>
-        ) : sub === "board" ? (
-          <Board engagements={visible} orgById={orgById} onMove={moveEngagement} />
-        ) : (
-          <TasksList tasks={tasks} engById={engById} orgById={orgById} onToggle={toggleTask} />
-        )}
+          );
+        })}
       </div>
 
-      {showNew && (
+      <div className="text-[12px] leading-relaxed text-white/40">{ENGAGEMENT_DOMAIN_BLURB[domain]}</div>
+
+      {access === "none" ? (
+        <div className="flex flex-1 items-center justify-center rounded-xl border border-mc-border bg-mc-panel">
+          <div className="max-w-md p-8 text-center">
+            <div className="text-[14px] font-medium text-white">Restricted for your role</div>
+            <div className="mt-2 text-[12.5px] leading-relaxed text-white/50">
+              {permissions.label} does not have access to {ENGAGEMENT_TYPE_LABELS[domain]}. Switch to a role with
+              access to this domain (e.g. the relevant domain manager, Executive, or Admin / IT) to view it.
+            </div>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            <StatCard label="Active relationship value" value={fmtSgd(totalActive)} />
+            <StatCard label="Confirmed or live" value={String(liveOrConfirmed)} />
+            <StatCard label="Total engagements" value={String(visible.length)} />
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex gap-1 rounded-lg border border-mc-border bg-mc-panel p-1">
+              {(["board", "tasks"] as SubTab[]).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setSub(s)}
+                  className={
+                    "rounded-md px-3 py-1.5 text-[12.5px] capitalize " +
+                    (sub === s ? "bg-mc-blue text-white" : "text-white/60 hover:text-white")
+                  }
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-2">
+              {access === "read" && (
+                <span className="text-[11px] text-white/30">Read-only for your role</span>
+              )}
+              {sub === "board" && canCreate && (
+                <button
+                  onClick={() => setShowNew(true)}
+                  className="rounded-lg bg-mc-blue px-3 py-1.5 text-[12.5px] font-medium text-white hover:bg-mc-blueBright"
+                >
+                  + New {ENGAGEMENT_TYPE_LABELS[domain]} Engagement
+                </button>
+              )}
+            </div>
+          </div>
+
+          {access === "own" && hiddenCount > 0 && (
+            <div className="text-[11px] text-white/30">
+              {hiddenCount} other {ENGAGEMENT_TYPE_LABELS[domain]} engagement{hiddenCount === 1 ? "" : "s"} belong
+              to other reps and are hidden for your role.
+            </div>
+          )}
+
+          <div className="flex-1 overflow-auto">
+            {loading ? (
+              <div className="p-8 text-center text-white/40">Loading relationship hub data…</div>
+            ) : sub === "board" ? (
+              <Board
+                engagements={visible}
+                orgById={orgById}
+                onMove={moveEngagement}
+                domain={domain}
+                permissions={permissions}
+                onApprovePricing={approvePricing}
+              />
+            ) : (
+              <TasksList tasks={visibleTasks} engById={engById} orgById={orgById} onToggle={toggleTask} />
+            )}
+          </div>
+        </>
+      )}
+
+      {showNew && canCreate && (
         <NewEngagementModal
+          domain={domain}
+          permissions={permissions}
           organizations={organizations}
           onClose={() => setShowNew(false)}
           onCreated={() => {
@@ -201,53 +268,78 @@ function Board({
   engagements,
   orgById,
   onMove,
+  domain,
+  permissions,
+  onApprovePricing,
 }: {
   engagements: Engagement[];
   orgById: Record<string, Organization>;
   onMove: (id: string, stage: string) => void;
+  domain: EngagementType;
+  permissions: RolePermissions;
+  onApprovePricing: (e: Engagement) => void;
 }) {
+  const stages = STAGES_BY_TYPE[domain];
   return (
     <div className="grid h-full grid-cols-6 gap-3">
-      {PHASES.map((phase) => {
-        const phaseEngagements = engagements.filter((e) => e.phase === phase);
-        const phaseTotal = phaseEngagements.reduce((s, e) => s + e.valueSgd, 0);
+      {stages.map((stage) => {
+        const stageEngagements = engagements.filter((e) => e.stage === stage);
+        const stageTotal = stageEngagements.reduce((s, e) => s + e.valueSgd, 0);
         return (
-          <div key={phase} className="flex flex-col rounded-xl border border-mc-border bg-mc-panel">
+          <div key={stage} className="flex flex-col rounded-xl border border-mc-border bg-mc-panel">
             <div className="border-b border-mc-border p-3">
-              <div className="flex items-center gap-2 text-[12px] font-medium text-white">
-                <span className="h-2 w-2 rounded-full" style={{ background: PHASE_COLORS[phase] }} />
-                {phase}
-              </div>
+              <div className="text-[11.5px] font-medium leading-snug text-white">{stage}</div>
               <div className="mt-1 text-[10.5px] text-white/40">
-                {phaseEngagements.length} · {fmtSgd(phaseTotal)}
+                {stageEngagements.length} · {fmtSgd(stageTotal)}
               </div>
             </div>
             <div className="flex-1 space-y-2 overflow-y-auto p-2">
-              {phaseEngagements.map((e) => (
-                <div key={e.id} className="rounded-lg border border-mc-border bg-mc-panel2 p-2.5">
-                  <div className="text-[10px] uppercase tracking-wide text-mc-cyan/80">
-                    {ENGAGEMENT_TYPE_LABELS[e.type]}
+              {stageEngagements.map((e) => {
+                const editable = canEditEngagement(permissions, e);
+                return (
+                  <div key={e.id} className="rounded-lg border border-mc-border bg-mc-panel2 p-2.5">
+                    <div className="text-[12.5px] font-medium leading-snug text-white">{e.name}</div>
+                    <div className="mt-1 text-[11px] text-white/50">
+                      {orgById[e.orgId]?.name}
+                      {e.secondaryOrgId && orgById[e.secondaryOrgId] ? ` · ${orgById[e.secondaryOrgId]?.name}` : ""}
+                    </div>
+                    <div className="mt-0.5 text-[10px] text-white/30">Owner: {e.owner}</div>
+                    <div className="mt-1.5 text-[12px] font-semibold text-mc-green">{fmtSgd(e.valueSgd)}</div>
+                    {editable ? (
+                      <select
+                        value={e.stage}
+                        onChange={(ev) => onMove(e.id, ev.target.value)}
+                        className="mt-2 w-full rounded border border-mc-border bg-black/30 px-1.5 py-1 text-[11px] text-white/70"
+                      >
+                        {stages.map((s) => (
+                          <option key={s} value={s}>
+                            {s}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <div className="mt-2 rounded border border-mc-border/60 bg-black/20 px-1.5 py-1 text-[11px] text-white/35">
+                        Read-only
+                      </div>
+                    )}
+                    {domain === "AdCampaign" && (
+                      <button
+                        onClick={() => onApprovePricing(e)}
+                        disabled={!permissions.canApprovePricing}
+                        title={
+                          permissions.canApprovePricing
+                            ? `Approve pricing/discount (up to ${permissions.discountApprovalThresholdPct}% without escalation)`
+                            : "Requires Ad Sales Director (or Admin / IT) role"
+                        }
+                        className="mt-1.5 w-full rounded border border-mc-border px-1.5 py-1 text-[10.5px] text-white/50 hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
+                      >
+                        Approve pricing
+                      </button>
+                    )}
                   </div>
-                  <div className="mt-0.5 text-[12.5px] font-medium leading-snug text-white">{e.name}</div>
-                  <div className="mt-1 text-[11px] text-white/50">
-                    {orgById[e.orgId]?.name}
-                    {e.secondaryOrgId && orgById[e.secondaryOrgId] ? ` · ${orgById[e.secondaryOrgId]?.name}` : ""}
-                  </div>
-                  <div className="mt-1.5 text-[12px] font-semibold text-mc-green">{fmtSgd(e.valueSgd)}</div>
-                  <select
-                    value={e.stage}
-                    onChange={(ev) => onMove(e.id, ev.target.value)}
-                    className="mt-2 w-full rounded border border-mc-border bg-black/30 px-1.5 py-1 text-[11px] text-white/70"
-                  >
-                    {STAGES_BY_TYPE[e.type].map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              ))}
-              {phaseEngagements.length === 0 && (
+                );
+              })}
+              {stageEngagements.length === 0 && (
                 <div className="p-3 text-center text-[11px] text-white/25">—</div>
               )}
             </div>
@@ -302,19 +394,24 @@ function TasksList({
 }
 
 function NewEngagementModal({
+  domain,
+  permissions,
   organizations,
   onClose,
   onCreated,
 }: {
+  domain: EngagementType;
+  permissions: RolePermissions;
   organizations: Organization[];
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const [type, setType] = useState<EngagementType>("AdCampaign");
+  const allowedTypes = DOMAINS.filter((d) => canCreateInDomain(permissions, d));
+  const [type, setType] = useState<EngagementType>(domain);
   const [name, setName] = useState("");
   const [orgId, setOrgId] = useState(organizations[0]?.id || "");
   const [secondaryOrgId, setSecondaryOrgId] = useState("");
-  const [stage, setStage] = useState(STAGES_BY_TYPE.AdCampaign[0]);
+  const [stage, setStage] = useState(STAGES_BY_TYPE[domain][0]);
   const [valueSgd, setValueSgd] = useState(100000);
   const [props, setProps] = useState<Record<string, string>>({});
   const [platforms, setPlatforms] = useState<string[]>([]);
@@ -343,6 +440,7 @@ function NewEngagementModal({
         stage,
         valueSgd,
         properties,
+        owner: permissions.actingAs,
       }),
     });
     setSaving(false);
@@ -361,7 +459,7 @@ function NewEngagementModal({
               onChange={(e) => changeType(e.target.value as EngagementType)}
               className="w-full rounded-lg border border-mc-border bg-black/30 px-3 py-2 text-[13px] text-white"
             >
-              {(Object.keys(ENGAGEMENT_TYPE_LABELS) as EngagementType[]).map((t) => (
+              {allowedTypes.map((t) => (
                 <option key={t} value={t}>
                   {ENGAGEMENT_TYPE_LABELS[t]}
                 </option>

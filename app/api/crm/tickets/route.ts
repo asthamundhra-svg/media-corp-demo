@@ -20,6 +20,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const row = await store.createTicket({
     channel: body.channel ?? "meWATCH",
+    contactChannel: body.contactChannel ?? "Web Help Centre",
     category: body.category ?? "",
     subject: body.subject,
     body: body.body ?? "",
@@ -29,6 +30,7 @@ export async function POST(req: NextRequest) {
     status: body.status ?? "New",
     priority: body.priority ?? "Medium",
     assignee: body.assignee ?? "Unassigned",
+    messages: body.messages ?? [],
     resolvedAt: null,
   });
   return NextResponse.json({ ticket: row }, { status: 201 });

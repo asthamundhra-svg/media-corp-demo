@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { useRole } from "@/components/RoleSwitcher";
 
 type ChatMessage = { role: "user" | "assistant"; content: string };
 type TraceEntry = { tool: string; input: any; result: any };
@@ -17,6 +18,7 @@ const SUGGESTIONS = [
 ];
 
 export default function AgentChat({ onActivity }: { onActivity: () => void }) {
+  const { role, permissions } = useRole();
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
@@ -45,7 +47,7 @@ export default function AgentChat({ onActivity }: { onActivity: () => void }) {
       const res = await fetch("/api/agent/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: next }),
+        body: JSON.stringify({ messages: next, role }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -138,6 +140,11 @@ export default function AgentChat({ onActivity }: { onActivity: () => void }) {
       </div>
 
       <div className="hidden w-64 shrink-0 flex-col gap-2 md:flex">
+        <div className="rounded-xl border border-mc-border bg-mc-panel p-3">
+          <div className="mb-1 text-[11px] uppercase tracking-wide text-white/40">Acting as</div>
+          <div className="text-[13px] font-medium text-mc-blueBright">{permissions.label}</div>
+          <div className="mt-1 text-[11px] leading-snug text-white/40">{permissions.description}</div>
+        </div>
         <div className="rounded-xl border border-mc-border bg-mc-panel p-3">
           <div className="mb-2 text-[11px] uppercase tracking-wide text-white/40">Try asking</div>
           <div className="flex flex-col gap-1.5">

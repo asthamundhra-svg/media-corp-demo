@@ -75,13 +75,47 @@ export interface Engagement {
   updatedAt: string;
 }
 
+// `channel` (below) is the business queue a ticket belongs to - which part
+// of Mediacorp it's about. `contactChannel` is a completely separate
+// dimension - how the ticket physically arrived. A meWATCH billing
+// complaint can arrive via WhatsApp, a Broadcast song-ID request can arrive
+// via X - the two dimensions are independent and both real.
 export type TicketChannel = "meWATCH" | "Broadcast" | "Advertiser" | "Corporate";
 export type TicketStatus = "New" | "Open" | "Pending" | "Resolved" | "Closed";
 export type TicketPriority = "Low" | "Medium" | "High" | "Urgent";
 
+export type ContactChannel =
+  | "WhatsApp Business"
+  | "Instagram DM"
+  | "Facebook Messenger"
+  | "X (Twitter)"
+  | "Phone"
+  | "Email"
+  | "Web Help Centre";
+
+export type MessageDirection = "inbound" | "outbound";
+
+export interface TicketMessage {
+  id: string;
+  author: string;
+  direction: MessageDirection;
+  channel: ContactChannel;
+  body: string;
+  createdAt: string;
+}
+
 export interface Ticket {
   id: string;
-  channel: TicketChannel;
+  channel: TicketChannel; // business queue: meWATCH / Broadcast / Advertiser / Corporate
+  // contactChannel/messages are optional at the type level only so that
+  // lib/pgStore.ts (left untouched per project constraints - it predates
+  // the multi-channel support desk) still satisfies this interface. Every
+  // ticket created through the in-memory store (seed data, the CRM API
+  // routes, and the MCP tools) always populates both fields; callers
+  // should still fall back defensively (contactChannel ?? "Web Help
+  // Centre", messages ?? []) in case a Postgres-backed deployment is ever
+  // wired up without a matching schema/store update.
+  contactChannel?: ContactChannel; // how the ticket physically arrived
   category: string;
   subject: string;
   body: string;
@@ -91,6 +125,7 @@ export interface Ticket {
   status: TicketStatus;
   priority: TicketPriority;
   assignee: string;
+  messages?: TicketMessage[]; // full inbound/outbound reply thread
   createdAt: string;
   updatedAt: string;
   resolvedAt?: string | null;

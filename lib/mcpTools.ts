@@ -1,5 +1,15 @@
 import { getStore } from "./getStore";
-import { EngagementPhase, EngagementType, OrgCategory, TicketChannel, TicketPriority, TicketStatus } from "./types";
+import {
+  EngagementPhase,
+  EngagementType,
+  OrgCategory,
+  TicketChannel,
+  TicketPriority,
+  TicketStatus,
+  TicketMessage,
+} from "./types";
+import { STAGES_BY_TYPE } from "./engagementMeta";
+import { CONTACT_CHANNELS } from "./channels";
 
 // These tool definitions are shared by two callers:
 //  1. app/api/mcp/route.ts - a real MCP (Model Context Protocol) JSON-RPC
@@ -158,7 +168,13 @@ export const tools: ToolDef[] = [
   {
     name: "create_engagement",
     description:
-      "Create a new engagement of any type. Use type-appropriate stage vocabulary: AdCampaign (Prospecting, Avails Sent, Negotiation, Booked, Live, Completed, Cancelled), ContentLicensing (Scouting, Rights Negotiation, Contract Drafting, Signed, Active, Expired), TalentBooking (Inquiry, Fee Negotiation, Contract Sent, Confirmed, Completed, Cancelled), Sponsorship (Prospecting, Proposal Sent, Negotiation, Confirmed, Live, Completed), DOOHPartnership (Prospecting, Terms Negotiation, Contract Signed, Active, Renewal Due, Terminated). Use the properties bag for type-specific fields, e.g. {campaignType, platforms} for AdCampaign, {direction, contentTitle, territory, genre} for ContentLicensing, {production, role} for TalentBooking, {eventName, tier} for Sponsorship, {venueName, screenCount, revenueSharePct, locationType} for DOOHPartnership.",
+      `Create a new engagement of any type. Each type runs its own real-world lifecycle, not a generic sales pipeline - use exactly this type-appropriate stage vocabulary: ` +
+      `AdCampaign (${STAGES_BY_TYPE.AdCampaign.join(", ")}), ` +
+      `ContentLicensing (${STAGES_BY_TYPE.ContentLicensing.join(", ")}), ` +
+      `TalentBooking (${STAGES_BY_TYPE.TalentBooking.join(", ")}), ` +
+      `Sponsorship (${STAGES_BY_TYPE.Sponsorship.join(", ")}), ` +
+      `DOOHPartnership (${STAGES_BY_TYPE.DOOHPartnership.join(", ")}). ` +
+      "Use the properties bag for type-specific fields, e.g. {campaignType, platforms} for AdCampaign, {direction, contentTitle, territory, genre} for ContentLicensing, {production, role} for TalentBooking, {eventName, tier} for Sponsorship, {venueName, screenCount, revenueSharePct, locationType} for DOOHPartnership.",
     input_schema: {
       type: "object",
       properties: {
@@ -167,7 +183,7 @@ export const tools: ToolDef[] = [
         orgId: { type: "string", description: "Primary counterparty organization id" },
         secondaryOrgId: { type: "string", description: "e.g. the media agency on an ad campaign" },
         contactId: { type: "string", description: "e.g. the talent contact on a booking" },
-        stage: { type: "string" },
+        stage: { type: "string", description: "Must be one of that type's own stage list - see tool description" },
         valueSgd: { type: "number" },
         startDate: { type: "string", description: "ISO date" },
         endDate: { type: "string", description: "ISO date" },
@@ -177,13 +193,21 @@ export const tools: ToolDef[] = [
     },
     execute: async (input) => {
       const store = getStore();
+      const type: EngagementType = input.type ?? "AdCampaign";
+      const validStages = STAGES_BY_TYPE[type];
+      const stage = input.stage ?? validStages[0];
+      if (!validStages.includes(stage)) {
+        return {
+          error: `"${stage}" is not a valid stage for ${type}. Valid stages for ${type} are: ${validStages.join(", ")}.`,
+        };
+      }
       const row = await store.createEngagement({
-        type: input.type,
+        type,
         name: input.name,
         orgId: input.orgId,
         secondaryOrgId: input.secondaryOrgId ?? null,
         contactId: input.contactId ?? null,
-        stage: input.stage ?? "Prospecting",
+        stage,
         valueSgd: input.valueSgd ?? 0,
         startDate: input.startDate ?? new Date().toISOString(),
         endDate: input.endDate ?? new Date().toISOString(),
@@ -197,7 +221,7 @@ export const tools: ToolDef[] = [
   {
     name: "update_engagement_stage",
     description:
-      "Move an engagement to a new stage (its universal kanban phase is derived automatically). Use this after a call, contract signature, or negotiation update.",
+      "Move an engagement to a new stage within its own domain's lifecycle (its cross-domain rollup phase is derived automatically). The stage must belong to that engagement's type - e.g. an AdCampaign can only move between Avails Shared, RFP / Proposal Sent, Negotiation, Insertion Order Signed, Live / Airing, Make-Good or Renewal Review. Use this after a call, contract signature, or negotiation update.",
     input_schema: {
       type: "object",
       properties: {
@@ -208,6 +232,14 @@ export const tools: ToolDef[] = [
     },
     execute: async (input) => {
       const store = getStore();
+      const existing = await store.getEngagement(input.engagementId);
+      if (!existing) return { error: "Engagement not found" };
+      const validStages = STAGES_BY_TYPE[existing.type];
+      if (!validStages.includes(input.stage)) {
+        return {
+          error: `"${input.stage}" is not a valid stage for ${existing.type}. Valid stages for ${existing.type} are: ${validStages.join(", ")}.`,
+        };
+      }
       const row = await store.updateEngagement(input.engagementId, { stage: input.stage });
       if (!row) return { error: "Engagement not found" };
       await logAgentActivity(`Moved engagement "${row.name}" to ${row.stage}`);
@@ -303,11 +335,13 @@ export const tools: ToolDef[] = [
   },
   {
     name: "create_ticket",
-    description: "Log a new support ticket coming in from a viewer, listener, advertiser, or press contact.",
+    description:
+      "Log a new support ticket coming in from a viewer, listener, advertiser, or press contact. `channel` is the business queue it belongs to (meWATCH/Broadcast/Advertiser/Corporate); `contactChannel` is how it physically arrived (WhatsApp Business, Instagram DM, Facebook Messenger, X (Twitter), Phone, Email, or Web Help Centre) - the two are independent.",
     input_schema: {
       type: "object",
       properties: {
         channel: { type: "string", enum: TICKET_CHANNELS },
+        contactChannel: { type: "string", enum: CONTACT_CHANNELS },
         category: { type: "string" },
         subject: { type: "string" },
         body: { type: "string" },
@@ -322,6 +356,7 @@ export const tools: ToolDef[] = [
       const store = getStore();
       const row = await store.createTicket({
         channel: input.channel,
+        contactChannel: input.contactChannel ?? "Web Help Centre",
         category: input.category ?? "",
         subject: input.subject,
         body: input.body ?? "",
@@ -331,9 +366,21 @@ export const tools: ToolDef[] = [
         status: "New",
         priority: input.priority ?? "Medium",
         assignee: "Unassigned",
+        messages: input.body
+          ? [
+              {
+                id: `msg_${Date.now()}`,
+                author: input.requesterName ?? "Unknown",
+                direction: "inbound",
+                channel: input.contactChannel ?? "Web Help Centre",
+                body: input.body,
+                createdAt: new Date().toISOString(),
+              },
+            ]
+          : [],
         resolvedAt: null,
       });
-      await logAgentActivity(`Logged a new ${row.channel} ticket "${row.subject}"`);
+      await logAgentActivity(`Logged a new ${row.channel} ticket "${row.subject}" via ${row.contactChannel}`);
       return row;
     },
   },
@@ -407,6 +454,39 @@ export const tools: ToolDef[] = [
       const updated = await store.updateTicket(input.ticketId, { status: input.newStatus ?? "Pending" });
       await logAgentActivity(`Drafted reply on ticket "${ticket.subject}"`);
       return { note, ticket: updated };
+    },
+  },
+  {
+    name: "send_channel_reply",
+    description:
+      "Send an outbound reply to a support ticket via the exact contact channel it arrived on (WhatsApp Business, Instagram DM, Facebook Messenger, X (Twitter), Phone, Email, or Web Help Centre). Appends the reply to the ticket's live message thread and returns a simulated delivery confirmation naming the specific channel and recipient - use this (rather than reply_to_ticket) whenever the user wants to actually reply back to the requester on their own channel.",
+    input_schema: {
+      type: "object",
+      properties: {
+        ticketId: { type: "string" },
+        body: { type: "string" },
+      },
+      required: ["ticketId", "body"],
+    },
+    execute: async (input) => {
+      const store = getStore();
+      const ticket = await store.getTicket(input.ticketId);
+      if (!ticket) return { error: "Ticket not found" };
+      const contactChannel = ticket.contactChannel ?? "Web Help Centre";
+      const message: TicketMessage = {
+        id: `msg_${Date.now()}`,
+        author: "Astha Mundhra",
+        direction: "outbound",
+        channel: contactChannel,
+        body: input.body,
+        createdAt: new Date().toISOString(),
+      };
+      const messages = [...(ticket.messages || []), message];
+      const nextStatus = ticket.status === "New" || ticket.status === "Open" ? "Pending" : ticket.status;
+      const updated = await store.updateTicket(input.ticketId, { messages, status: nextStatus });
+      const confirmation = `Reply sent via ${contactChannel} to ${ticket.requesterContact}`;
+      await logAgentActivity(`Sent a ${contactChannel} reply on ticket "${ticket.subject}"`);
+      return { message, ticket: updated, confirmation };
     },
   },
 
